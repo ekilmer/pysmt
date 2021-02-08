@@ -28,11 +28,12 @@ from pysmt.exceptions import PysmtTypeError, PysmtValueError
 
 class FunctionInterpretation:
 
-    def __init__(self, formal_params, function_body):
+    def __init__(self, formal_params, function_body, allow_free_vars=False):
         if any(not x.is_symbol() or not x.is_term() for x in formal_params):
             raise PysmtValueError('Formal parameters of a function '
                                   'interpretation must be non-function symbols')
-        if not function_body.get_free_vars().issubset(set(formal_params)):
+        if not allow_free_vars and \
+           not function_body.get_free_variables().issubset(set(formal_params)):
             raise PysmtValueError('the body of a function interpretation cannot'
                                   ' contain free varibales other than formal '
                                   'paramteters')
@@ -44,8 +45,9 @@ class FunctionInterpretation:
         if len(actual_params) !=  len(self.formal_params):
             raise ValueError('The numbe of actual parameters does not match '
                              'with the number of formal parameters')
-        subs = dict(zip(formals, actuals))
-        return Substituter(env).substitute(self.function_body, subs)
+        subs = dict(zip(self.formal_params, actual_params))
+        SubsClass = type(env.substituter)
+        return SubsClass(env).substitute(self.function_body, subs)
 
 
 
@@ -178,7 +180,7 @@ class Substituter(pysmt.walkers.IdentityDagWalker):
         f = formula.function_name()
         interpretations = kwargs['interpretations']
         if f in interpretations:
-            res = interpretations[formula].interpret(self.env, args)
+            res = interpretations[f].interpret(self.env, args)
         else:
             res = pysmt.walkers.IdentityDagWalker.super(self, formula,
                                                         args=args, **kwargs)

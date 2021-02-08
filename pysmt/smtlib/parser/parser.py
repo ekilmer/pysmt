@@ -33,6 +33,7 @@ from pysmt.smtlib.annotations import Annotations
 from pysmt.utils import interactive_char_iterator
 from pysmt.constants import Fraction
 from pysmt.typing import _TypeDecl, PartialType
+from pysmt.substituter import FunctionInterpretation
 
 
 def open_(fname):
@@ -872,6 +873,47 @@ class SmtLibParser(object):
             yield cmd
         return
 
+    def parse_model(self, script):
+        """
+        TODO
+        """
+        mgr = self.env.formula_manager
+        self.cache.update(mgr.symbols)
+        self.cache.update(self.env.type_manager._custom_types_decl)
+        tokens = Tokenizer(script, interactive=self.interactive)
+        current = tokens.consume()
+        if (current != "("):
+            raise PysmtSyntaxError("'(' expected", tokens.pos_info)
+        current = tokens.consume()
+
+        # Backwards compatibility: skip optional model keyword
+        if (current == "model"):
+            current = tokens.consume()
+
+        cmd_gen = self.get_command(tokens)
+        model, interpretation = {}, {}
+        while current != ")":
+            if (current != "("):
+                raise PysmtSyntaxError("'(' expected", tokens.pos_info)
+            tokens.add_extra_token(current)
+            cmd = next(cmd_gen)
+            if cmd.name != 'define-fun':
+                raise PysmtSyntaxError("Unsupported model command type: %s" % cmd.name)
+            if len(cmd.args[1]) == 0: # Constant assignment
+                model[mgr.get_symbol(cmd.args[0])] = cmd.args[3]
+            else: # A function interpretation
+                for v in cmd.args[3].get_free_variables():
+                    if not v.symbol_name().startswith('@') and v not in cmd.args[1]:
+                        raise PysmtSyntaxError("Found a non-solver-defined free"
+                                               " variable in the definion of "
+                                               "function %s: %s" % (cmd.args[0],
+                                                                    cmd.args[3]))
+                interpretation[mgr.get_symbol(cmd.args[0])] = \
+                    FunctionInterpretation(cmd.args[1], cmd.args[3],
+                                           allow_free_vars=True)
+            current = tokens.consume()
+        return model, interpretation
+
     def get_script_fname(self, script_fname):
         """Given a filename and a Solver, executes the solver on the file."""
         with open_(script_fname) as script:
@@ -998,7 +1040,7 @@ class SmtLibParser(object):
                                        tokens.pos_info)
 
         if isinstance(res, _TypeDecl):
-            return res()
+            return self.env.type_manager.get_type_instance(res)
         else:
             return res
 
