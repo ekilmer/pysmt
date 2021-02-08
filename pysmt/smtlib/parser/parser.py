@@ -507,17 +507,19 @@ class SmtLibParser(object):
     def _enter_smtlib_as(self, stack, tokens, key):
         """Utility function that handles 'as' that is a special function in SMTLIB"""
         #pylint: disable=unused-argument
-        const = self.parse_atom(tokens, "expression")
-        if const != "const":
-            raise PysmtSyntaxError("expected 'const' in expression after 'as'",
-                                   tokens.pos_info)
+        what = self.parse_atom(tokens, "expression")
         ty = self.parse_type(tokens, "expression")
-
-        def res(expr):
-            return self.env.formula_manager.Array(ty.index_type, expr)
-        def handler():
-            return res
-        stack[-1].append(handler)
+        if what == "const":
+            assert ty.is_array_type(), "(as const x) is supported only for array constants"
+            def res(expr):
+                return self.env.formula_manager.Array(ty.index_type, expr)
+            def handler():
+                return res
+            stack[-1].append(handler)
+        else:
+            def handler():
+                return self.env.formula_manager.Symbol(what, ty)
+            stack[-1].append(handler)
 
     def _smtlib_underscore(self, stack, tokens, key):
         #pylint: disable=unused-argument

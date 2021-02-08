@@ -22,7 +22,31 @@ from six import iteritems
 import pysmt.walkers
 from pysmt.walkers.generic import handles
 import pysmt.operators as op
-from pysmt.exceptions import PysmtTypeError
+from pysmt.exceptions import PysmtTypeError, PysmtValueError
+
+
+
+class FunctionInterpretation:
+
+    def __init__(self, formal_params, function_body):
+        if any(not x.is_symbol() or not x.is_term() for x in formal_params):
+            raise PysmtValueError('Formal parameters of a function '
+                                  'interpretation must be non-function symbols')
+        if not function_body.get_free_vars().issubset(set(formal_params)):
+            raise PysmtValueError('the body of a function interpretation cannot'
+                                  ' contain free varibales other than formal '
+                                  'paramteters')
+        self.formal_params = list(formal_params)
+        self.function_body = function_body
+
+
+    def interpret(self, env, actual_params):
+        if len(actual_params) !=  len(self.formal_params):
+            raise ValueError('The numbe of actual parameters does not match '
+                             'with the number of formal parameters')
+        subs = dict(zip(formals, actuals))
+        return Substituter(env).substitute(self.function_body, subs)
+
 
 
 class Substituter(pysmt.walkers.IdentityDagWalker):
@@ -100,15 +124,19 @@ class Substituter(pysmt.walkers.IdentityDagWalker):
                                                                          formula,
                                                                          **kwargs)
 
-    def substitute(self, formula, subs):
+    def substitute(self, formula, subs=None, interpretations=None):
         """Replaces any subformula in formula with the definition in subs."""
 
         # Check that formula is a term
         if not formula.is_term():
             raise PysmtTypeError("substitute() can only be used on terms.")
 
-        for (i, k) in enumerate(subs):
-            v = subs[k]
+        if subs is None:
+            subs = {}
+        if interpretations is None:
+            interpretations = {}
+
+        for i, (k, v) in enumerate(subs.items()):
             # Check that substitutions are terms
             if not k.is_term():
                 raise PysmtTypeError(
@@ -126,7 +154,34 @@ class Substituter(pysmt.walkers.IdentityDagWalker):
                 raise PysmtTypeError(
                     "Value %d does not belong to the Formula Manager." % i)
 
-        res = self.walk(formula, substitutions=subs)
+        for i, (k, v) in enumerate(interpretations.items()):
+            # Check that interpretations are terms
+            if not k.is_symbol() or k.is_term():
+                raise PysmtTypeError(
+                    "Only function symbols should be provided as interpretation"
+                    " keys. Non-function '%s' found." % k)
+            if not isinstance(v, FunctionInterpretation):
+                raise PysmtTypeError(
+                    "Only FunctionInterpretation objects should be provided as "
+                    "interpretation values. Object '%s' of type %s "
+                    "found." % (v, type(v)))
+            # Check that interpretations belong to the current formula manager
+            if k not in self.manager:
+                raise PysmtTypeError(
+                    "Key %d does not belong to the Formula Manager." % i)
+
+        res = self.walk(formula, substitutions=subs,
+                        interpretations=interpretations)
+        return res
+
+    def walk_function(self, formula, args, **kwargs):
+        f = formula.function_name()
+        interpretations = kwargs['interpretations']
+        if f in interpretations:
+            res = interpretations[formula].interpret(self.env, args)
+        else:
+            res = pysmt.walkers.IdentityDagWalker.super(self, formula,
+                                                        args=args, **kwargs)
         return res
 
 
@@ -138,24 +193,22 @@ class MGSubstituter(Substituter):
     def __init__(self, env):
         Substituter.__init__(self, env=env)
 
-    @handles(set(op.ALL_TYPES) - op.QUANTIFIERS)
+    @handles(set(op.ALL_TYPES) - op.QUANTIFIERS - {op.FUNCTION})
     def walk_identity_or_replace(self, formula, args, **kwargs):
         """
         If the formula appears in the substitution, return the substitution.
         Otherwise, rebuild the formula by calling the IdentityWalker.
         """
         substitutions = kwargs['substitutions']
-        if formula in substitutions:
-            res = substitutions[formula]
-        else:
+        res = substitutions.get(formula, None)
+        if res is None:
             res = Substituter.super(self, formula, args=args, **kwargs)
         return res
 
     def walk_forall(self, formula, args, **kwargs):
         substitutions = kwargs['substitutions']
-        if formula in substitutions:
-            res = substitutions[formula]
-        else:
+        res = substitutions.get(formula, None)
+        if res is None:
             qvars = [pysmt.walkers.IdentityDagWalker.walk_symbol(self, v, args, **kwargs)
                      for v in formula.quantifier_vars()]
             res = self.mgr.ForAll(qvars, args[0])
@@ -163,9 +216,8 @@ class MGSubstituter(Substituter):
 
     def walk_exists(self, formula, args, **kwargs):
         substitutions = kwargs['substitutions']
-        if formula in substitutions:
-            res = substitutions[formula]
-        else:
+        res = substitutions.get(formula, None)
+        if res is None:
             qvars = [pysmt.walkers.IdentityDagWalker.walk_symbol(self, v, args, **kwargs)
                      for v in formula.quantifier_vars()]
             res = self.mgr.Exists(qvars, args[0])
@@ -196,7 +248,7 @@ class MSSubstituter(Substituter):
         """
         return substitutions.get(formula, formula)
 
-    @handles(set(op.ALL_TYPES) - op.QUANTIFIERS)
+    @handles(set(op.ALL_TYPES) - op.QUANTIFIERS - {op.FUNCTION})
     def walk_replace(self, formula, args, **kwargs):
         new_f =  Substituter.super(self, formula, args=args, **kwargs)
         return self._substitute(new_f, kwargs['substitutions'])
